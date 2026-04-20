@@ -15,13 +15,27 @@ from .session_store import (
 from .tui import run_tui
 
 
+def _looks_like_dir_arg(raw: str) -> bool:
+    p = Path(raw).expanduser()
+    if p.exists() and p.is_dir():
+        return True
+    return (
+        raw in (".", "..")
+        or raw.startswith("/")
+        or raw.startswith("./")
+        or raw.startswith("../")
+        or raw.startswith("~/")
+        or "/" in raw
+    )
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Codex session manager")
-    p.add_argument("session_ids", nargs="*", help="session id(s) to delete")
+    p.add_argument("targets", nargs="*", help="session id(s) to delete, or '<dir> [prompt]' to create new session")
     p.add_argument("-l", "--list", action="store_true", help="list sessions")
     p.add_argument("--full-id", action="store_true", help="show full id in list header (default shows shortened id)")
-    p.add_argument("--new", dest="new_dir", type=Path, help="create a new session in target directory")
-    p.add_argument("--prompt", dest="new_prompt", default="", help="optional initial prompt for --new")
+    p.add_argument("--new", dest="new_dir", type=Path, help=argparse.SUPPRESS)
+    p.add_argument("--prompt", dest="new_prompt", default="", help=argparse.SUPPRESS)
     p.add_argument("--all", action="store_true", help="delete all sessions")
     p.add_argument("--dry-run", action="store_true", help="preview only, no changes")
     p.add_argument("-y", "--yes", action="store_true", help="skip confirmation")
@@ -34,10 +48,20 @@ def main() -> int:
     args = parse_args()
     codex_home: Path = args.codex_home.expanduser()
 
+    # Preferred new-session UX: `cdx <dir> [optional prompt]`
+    if args.targets and not args.list and not args.all:
+        first = args.targets[0]
+        if _looks_like_dir_arg(first):
+            prompt_text = " ".join(args.targets[1:]).strip()
+            if args.dry_run:
+                print("Warning: --dry-run is ignored for new-session mode.")
+            return run_codex_new(first, prompt_text)
+
+    # Backward-compatible path.
     if args.new_dir is not None:
         return run_codex_new(args.new_dir, args.new_prompt)
 
-    if not args.no_tui and not args.list and not args.all and not args.session_ids:
+    if not args.no_tui and not args.list and not args.all and not args.targets:
         try:
             while True:
                 action, payload = run_tui(codex_home)
@@ -56,17 +80,17 @@ def main() -> int:
 
     if args.list:
         print_sessions(sessions, full_id=args.full_id)
-        if not args.all and not args.session_ids:
+        if not args.all and not args.targets:
             return 0
 
-    if not args.all and not args.session_ids:
+    if not args.all and not args.targets:
         print("Nothing to delete. Use --list, --all, or provide session id(s).")
         return 1
 
     if args.all:
         target_ids = set(sessions.keys())
     else:
-        target_ids = set(validate_ids(args.session_ids))
+        target_ids = set(validate_ids(args.targets))
 
     if not target_ids:
         print("No matching sessions to delete.")

@@ -63,7 +63,7 @@ fish 用户可将上面一行写入 `~/.config/fish/config.fish` 持久生效。
 ```bash
 cdx
 cdx --list
-cdx --new /path/to/project --prompt "start a refactor"
+cdx /path/to/project "start a refactor"
 ```
 
 ```bash
@@ -74,7 +74,7 @@ cdx
 cdx --list
 
 # 在指定目录新建会话（可选首条 prompt）
-cdx --new /path/to/project --prompt "start a refactor"
+cdx /path/to/project "start a refactor"
 ```
 
 ## TUI keys

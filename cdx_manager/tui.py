@@ -284,21 +284,37 @@ def confirm_delete(stdscr: curses.window, text: str) -> bool:
     return ch in (ord("y"), ord("Y"))
 
 
-def prompt_input(stdscr: curses.window, text: str) -> str:
+def prompt_input(stdscr: curses.window, text: str) -> str | None:
     h, w = stdscr.getmaxyx()
-    prompt = clip_text(text + ": ", w - 1)
-    stdscr.addnstr(h - 1, 0, " " * (w - 1), w - 1)
-    stdscr.addnstr(h - 1, 0, prompt, w - 1, curses.A_BOLD)
-    stdscr.refresh()
-    curses.echo()
+    prompt = clip_text(text + " (Esc cancel): ", w - 1)
+    chars: list[str] = []
     curses.curs_set(1)
     try:
-        raw = stdscr.getstr(h - 1, min(len(prompt), w - 1), max(1, w - len(prompt) - 1))
-        value = raw.decode("utf-8", errors="ignore").strip()
+        while True:
+            stdscr.addnstr(h - 1, 0, " " * (w - 1), w - 1)
+            stdscr.addnstr(h - 1, 0, prompt, w - 1, curses.A_BOLD)
+            max_input = max(1, w - len(prompt) - 1)
+            current = "".join(chars)
+            stdscr.addnstr(h - 1, min(len(prompt), w - 1), clip_text_cells(current, max_input), max_input)
+            stdscr.refresh()
+
+            ch = stdscr.get_wch()
+            if ch in ("\n", "\r"):
+                return "".join(chars).strip()
+            if ch == "\x1b":
+                return None
+            if ch == curses.KEY_BACKSPACE or ch == "\b" or ch == "\x7f":
+                if chars:
+                    chars.pop()
+                continue
+            if ch == curses.KEY_DC:
+                if chars:
+                    chars.pop()
+                continue
+            if isinstance(ch, str) and ch.isprintable():
+                chars.append(ch)
     finally:
-        curses.noecho()
         curses.curs_set(0)
-    return value
 
 
 def run_tui(codex_home: Path) -> tuple[str, dict[str, str] | None]:
@@ -357,8 +373,14 @@ def run_tui(codex_home: Path) -> tuple[str, dict[str, str] | None]:
                 current = session_from_entry(entries[selected_row]) if selectable else None
                 default_dir = current.cwd if current is not None else os.getcwd()
                 entered = prompt_input(stdscr, f"New session dir (empty uses {default_dir})")
+                if entered is None:
+                    status = "New session canceled."
+                    continue
                 target_dir = entered or default_dir or os.getcwd()
                 prompt = prompt_input(stdscr, "Initial prompt (optional)")
+                if prompt is None:
+                    status = "New session canceled."
+                    continue
                 payload = {"cwd": target_dir, "prompt": prompt}
                 return ("new", payload)
             if ch in (curses.KEY_UP, ord("k"), ord("K")):
