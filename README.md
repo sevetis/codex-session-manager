@@ -14,11 +14,11 @@ A lightweight Codex session manager:
 
 ## Why this exists / 为什么要做这个
 
-Codex 原生对话管理在日常使用中还有不少可改进空间：会话入口分散、删除能力缺失、跨项目切换成本高，定位旧会话效率也不稳定。  
-这个工具把这些高频操作收敛成统一入口，尽量减少在“找会话”和“管理上下文”上的时间消耗。
-
 Codex's built-in conversation management still has room for improvement: scattered entry points, no direct deletion workflow, and friction when switching projects.  
 This tool provides one practical, keyboard-first control surface for day-to-day session operations.
+
+Codex 原生对话管理在日常使用中还有不少可改进空间：会话入口分散、删除能力缺失、跨项目切换成本高，定位旧会话效率也不稳定。  
+这个工具把这些高频操作收敛成统一入口，尽量减少在“找会话”和“管理上下文”上的时间消耗。
 
 ## Install
 
