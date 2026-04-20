@@ -7,7 +7,7 @@ from typing import Any
 
 from .models import SessionInfo
 from .session_store import collect_sessions, execute_delete, sorted_sessions
-from .textutil import clip_text, clip_text_cells, display_title, short_session_id
+from .textutil import char_cell_width, clip_text, clip_text_cells, display_title, pad_text_cells, short_session_id, text_cell_width
 
 VIEW_TIME = "time"
 VIEW_CWD = "cwd"
@@ -29,20 +29,19 @@ def _init_colors() -> None:
     curses.start_color()
     curses.use_default_colors()
     curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)   # selected row
-    curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # header bar
-    curses.init_pair(3, curses.COLOR_CYAN, -1)                    # section title
+    curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # top header
+    curses.init_pair(3, curses.COLOR_CYAN, -1)                    # panel titles
     curses.init_pair(4, curses.COLOR_YELLOW, -1)                  # status line
-    curses.init_pair(5, curses.COLOR_WHITE, -1)                   # hint line
-    curses.init_pair(6, curses.COLOR_CYAN, -1)                    # detail key
-    curses.init_pair(7, curses.COLOR_WHITE, -1)                   # detail value
+    curses.init_pair(5, curses.COLOR_GREEN, -1)                   # hints/summary
+    curses.init_pair(6, curses.COLOR_BLUE, -1)                    # detail keys (same tone as cwd group headers)
+    curses.init_pair(7, curses.COLOR_WHITE, -1)                   # detail values
+    curses.init_pair(8, curses.COLOR_BLUE, -1)                    # group headers
 
 
 def _detail_lines(session: SessionInfo | None) -> list[tuple[str, str] | str]:
     if session is None:
         return ["No session selected."]
     return [
-        "Session Detail",
-        "",
         ("title", display_title(session)),
         ("short_id", short_session_id(session.session_id)),
         ("full_id", session.session_id),
@@ -52,9 +51,51 @@ def _detail_lines(session: SessionInfo | None) -> list[tuple[str, str] | str]:
         "",
         ("first_prompt", session.first_prompt or "-"),
         "",
-        "session_files:",
-        *([("", str(p)) for p in session.files] if session.files else [("", "-")]),
+        "session_files",
+        *([("session_file", str(p)) for p in session.files] if session.files else [("session_file", "-")]),
     ]
+
+
+def _wrap_text_cells(text: str, max_cells: int, max_lines: int) -> list[str]:
+    if max_lines <= 0:
+        return []
+    if max_cells <= 0:
+        return [""]
+    src = text if isinstance(text, str) else str(text)
+    if not src:
+        return [""]
+
+    lines: list[str] = []
+    current: list[str] = []
+    used = 0
+    for ch in src:
+        if ch == "\n":
+            lines.append("".join(current))
+            current = []
+            used = 0
+            if len(lines) >= max_lines:
+                break
+            continue
+        w = char_cell_width(ch)
+        if used + w > max_cells:
+            lines.append("".join(current))
+            current = [ch]
+            used = w
+            if len(lines) >= max_lines:
+                break
+            continue
+        current.append(ch)
+        used += w
+
+    if len(lines) < max_lines and current:
+        lines.append("".join(current))
+
+    # If truncated, suffix ellipsis on the last visible line.
+    original_width = text_cell_width(src)
+    visible_width = sum(text_cell_width(x) for x in lines)
+    if visible_width < original_width and lines:
+        lines[-1] = clip_text_cells(lines[-1], max_cells)
+    return lines[:max_lines] if lines else [""]
 
 
 def _draw_panel_border(stdscr: curses.window, top: int, left: int, height: int, width: int) -> None:
@@ -145,6 +186,7 @@ def draw_tui(
     hint_attr = curses.color_pair(5) if curses.has_colors() else curses.A_DIM
     detail_key_attr = curses.color_pair(6) | curses.A_BOLD if curses.has_colors() else curses.A_BOLD
     detail_val_attr = curses.color_pair(7) if curses.has_colors() else curses.A_NORMAL
+    group_header_attr = curses.color_pair(8) | curses.A_BOLD if curses.has_colors() else section_attr
 
     title = "CDX Session Manager"
     _safe_addnstr(stdscr, 0, 0, " " * max(1, w - 1), w - 1, header_attr)
@@ -209,9 +251,7 @@ def draw_tui(
         y = list_inner_top + row_idx * per_item
         if e.get("type") == "header":
             header = f"[{clip_text_cells(str(e.get('title', '')), max(6, list_inner_width - 2))}]"
-            _safe_addnstr(stdscr, y, list_inner_left, header, list_inner_width, section_attr)
-            if y + 1 < list_inner_top + list_inner_height:
-                _safe_addnstr(stdscr, y + 1, list_inner_left, "", list_inner_width)
+            _safe_addnstr(stdscr, y, list_inner_left, header, list_inner_width, group_header_attr)
             continue
 
         s = session_from_entry(e)
@@ -222,45 +262,79 @@ def draw_tui(
         fixed_prefix = f"{marker} "
         id_col = 14
         title_max = max(12, min(38, list_inner_width // 2))
-        title_text = clip_text_cells(display_title(s), title_max)
-        title_col = f"{title_text:<{title_max}}"
-        used = len(fixed_prefix) + len(title_col) + 2 + id_col + 2
-        cwd_max = max(6, list_inner_width - used)
+        title_col = pad_text_cells(display_title(s), title_max)
+        id_col_text = pad_text_cells(id_text, id_col)
+        used_cells = text_cell_width(fixed_prefix) + title_max + 2 + id_col + 2
+        cwd_max = max(6, list_inner_width - used_cells)
         cwd_text = clip_text_cells(s.cwd or "-", cwd_max)
-        line = f"{fixed_prefix}{title_col}  {id_text:<{id_col}}  {cwd_text}"
+        line = f"{fixed_prefix}{title_col}  {id_col_text}  {cwd_text}"
         attr = selected_attr if idx == selected_row else curses.A_NORMAL
         _safe_addnstr(stdscr, y, list_inner_left, line, list_inner_width, attr)
 
     if split:
         current = session_from_entry(entries[selected_row]) if entries and 0 <= selected_row < len(entries) else None
-        detail_lines = _detail_lines(current)
+        detail_rows = _detail_lines(current)
         start_y = right_top + 1
         start_x = right_left + 1
         max_h = max(1, right_height - 2)
         max_w = max(1, right_width - 2)
-        for i, row in enumerate(detail_lines[:max_h]):
-            if isinstance(row, str) and i == 0:
-                _safe_addnstr(stdscr, start_y + i, start_x, clip_text_cells(row, max_w), max_w, section_attr)
-                continue
-            if isinstance(row, tuple):
-                key, value = row
-                key_text = f"{key:<12}" if key else " " * 12
-                key_cells = min(max_w, len(key_text) + 1)
-                _safe_addnstr(stdscr, start_y + i, start_x, key_text, key_cells, detail_key_attr)
-                _safe_addnstr(
-                    stdscr,
-                    start_y + i,
-                    start_x + key_cells,
-                    clip_text_cells(value.strip(), max_w - key_cells),
-                    max_w - key_cells,
-                    detail_val_attr,
-                )
-                continue
-            if isinstance(row, str) and row.endswith(":"):
-                _safe_addnstr(stdscr, start_y + i, start_x, clip_text_cells(row, max_w), max_w, detail_key_attr)
-                continue
+        y_off = 0
+        for idx_row, row in enumerate(detail_rows):
+            if y_off >= max_h:
+                break
+            y = start_y + y_off
+
             if isinstance(row, str):
-                _safe_addnstr(stdscr, start_y + i, start_x, clip_text_cells(row, max_w), max_w, detail_val_attr)
+                if row:
+                    _safe_addnstr(stdscr, y, start_x, clip_text_cells(row, max_w), max_w, detail_key_attr)
+                y_off += 1
+                continue
+
+            key, value = row
+            if key == "first_prompt":
+                _safe_addnstr(stdscr, y, start_x, "first_prompt", max_w, detail_key_attr)
+                y_off += 1
+                if y_off >= max_h:
+                    break
+                val_x = start_x + 2
+                val_w = max(1, max_w - 2)
+                wrapped = _wrap_text_cells(value.strip(), val_w, max_h - y_off)
+                for cont in wrapped:
+                    if y_off >= max_h:
+                        break
+                    _safe_addnstr(stdscr, start_y + y_off, val_x, cont, val_w, detail_val_attr)
+                    y_off += 1
+                continue
+
+            if key == "session_file":
+                val_x = start_x + 2
+                val_w = max(1, max_w - 2)
+                wrapped = _wrap_text_cells(value.strip(), val_w, max_h - y_off)
+                for cont in wrapped:
+                    if y_off >= max_h:
+                        break
+                    _safe_addnstr(stdscr, start_y + y_off, val_x, cont, val_w, detail_val_attr)
+                    y_off += 1
+                continue
+
+            key_text = f"{key:<12}" if key else " " * 12
+            key_cells = min(max_w, len(key_text) + 1)
+            val_w = max(1, max_w - key_cells)
+            wrapped = _wrap_text_cells(value.strip(), val_w, max_h - y_off)
+            if not wrapped:
+                wrapped = [""]
+
+            _safe_addnstr(stdscr, y, start_x, key_text, key_cells, detail_key_attr)
+            _safe_addnstr(stdscr, y, start_x + key_cells, wrapped[0], val_w, detail_val_attr)
+            y_off += 1
+
+            for cont in wrapped[1:]:
+                if y_off >= max_h:
+                    break
+                y = start_y + y_off
+                _safe_addnstr(stdscr, y, start_x, " " * key_cells, key_cells, detail_key_attr)
+                _safe_addnstr(stdscr, y, start_x + key_cells, cont, val_w, detail_val_attr)
+                y_off += 1
 
     status_text = f"Status: {status}" if status else "Status: idle"
     _safe_addnstr(stdscr, footer_status_line, 0, " " * max(1, w - 1), w - 1)

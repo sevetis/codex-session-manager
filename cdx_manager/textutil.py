@@ -54,6 +54,16 @@ def clip_text_cells(text: str, max_cells: int) -> str:
     return "".join(out) + suffix
 
 
+def pad_text_cells(text: str, target_cells: int) -> str:
+    if target_cells <= 0:
+        return ""
+    clipped = clip_text_cells(text, target_cells)
+    used = text_cell_width(clipped)
+    if used >= target_cells:
+        return clipped
+    return clipped + (" " * (target_cells - used))
+
+
 def display_title(s: SessionInfo) -> str:
     if s.thread_name and s.thread_name.strip():
         return s.thread_name.strip()
