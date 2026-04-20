@@ -39,12 +39,15 @@ def main() -> int:
 
     if not args.no_tui and not args.list and not args.all and not args.session_ids:
         try:
-            action, payload = run_tui(codex_home)
-            if action == "resume" and payload is not None:
-                return run_codex_resume(payload.get("session_id", ""), payload.get("cwd", ""))
-            if action == "new" and payload is not None:
-                return run_codex_new(payload.get("cwd", ""), payload.get("prompt", ""))
-            return 0
+            while True:
+                action, payload = run_tui(codex_home)
+                if action == "resume" and payload is not None:
+                    run_codex_resume(payload.get("session_id", ""), payload.get("cwd", ""))
+                    continue
+                if action == "new" and payload is not None:
+                    run_codex_new(payload.get("cwd", ""), payload.get("prompt", ""))
+                    continue
+                return 0
         except curses.error:
             print("TUI could not start in this terminal. Try --list or run in a real TTY.")
             return 1
