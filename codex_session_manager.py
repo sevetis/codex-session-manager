@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -147,6 +148,44 @@ def clip_text(text: str, limit: int = 70) -> str:
     if len(one_line) <= limit:
         return one_line
     return one_line[: limit - 3] + "..."
+
+
+def char_cell_width(ch: str) -> int:
+    if not ch:
+        return 0
+    if unicodedata.combining(ch):
+        return 0
+    if unicodedata.east_asian_width(ch) in ("W", "F"):
+        return 2
+    return 1
+
+
+def text_cell_width(text: str) -> int:
+    return sum(char_cell_width(ch) for ch in text)
+
+
+def clip_text_cells(text: str, max_cells: int) -> str:
+    if max_cells <= 0:
+        return ""
+    one_line = " ".join(text.split())
+    if text_cell_width(one_line) <= max_cells:
+        return one_line
+
+    suffix = "..."
+    suffix_w = text_cell_width(suffix)
+    if suffix_w >= max_cells:
+        return "." * max(1, min(3, max_cells))
+
+    out: list[str] = []
+    used = 0
+    budget = max_cells - suffix_w
+    for ch in one_line:
+        w = char_cell_width(ch)
+        if used + w > budget:
+            break
+        out.append(ch)
+        used += w
+    return "".join(out) + suffix
 
 
 def is_ignorable_user_text(text: str) -> bool:
@@ -317,19 +356,123 @@ def sorted_sessions(sessions: dict[str, SessionInfo]) -> list[SessionInfo]:
     )
 
 
+def _safe_addnstr(stdscr: curses.window, y: int, x: int, text: str, max_len: int, attr: int = 0) -> None:
+    if max_len <= 0:
+        return
+    try:
+        stdscr.addnstr(y, x, text, max_len, attr)
+    except curses.error:
+        return
+
+
+def _init_colors() -> None:
+    if not curses.has_colors():
+        return
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)   # selected row
+    curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)  # header
+    curses.init_pair(3, curses.COLOR_CYAN, -1)                   # section title
+    curses.init_pair(4, curses.COLOR_YELLOW, -1)                 # status
+    curses.init_pair(5, curses.COLOR_GREEN, -1)                  # hint
+
+
+def _detail_lines(session: SessionInfo | None) -> list[str]:
+    if session is None:
+        return ["No session selected."]
+    return [
+        "Session Detail",
+        "",
+        f"Title: {display_title(session)}",
+        f"Short ID: {short_session_id(session.session_id)}",
+        f"Full ID: {session.session_id}",
+        f"Updated: {session.updated_at or '-'}",
+        f"CWD: {session.cwd or '-'}",
+        f"Files: {len(session.files)}",
+        "",
+        "First Prompt:",
+        session.first_prompt or "-",
+        "",
+        "Session Files:",
+        *([str(p) for p in session.files] if session.files else ["-"]),
+    ]
+
+
+def _draw_panel_border(stdscr: curses.window, top: int, left: int, height: int, width: int) -> None:
+    if height < 2 or width < 2:
+        return
+    right = left + width - 1
+    bottom = top + height - 1
+    for x in range(left + 1, right):
+        _safe_addnstr(stdscr, top, x, "-", 1)
+        _safe_addnstr(stdscr, bottom, x, "-", 1)
+    for y in range(top + 1, bottom):
+        _safe_addnstr(stdscr, y, left, "|", 1)
+        _safe_addnstr(stdscr, y, right, "|", 1)
+    _safe_addnstr(stdscr, top, left, "+", 1)
+    _safe_addnstr(stdscr, top, right, "+", 1)
+    _safe_addnstr(stdscr, bottom, left, "+", 1)
+    _safe_addnstr(stdscr, bottom, right, "+", 1)
+
+
 def draw_tui(stdscr: curses.window, ordered: list[SessionInfo], selected: int, top: int, status: str) -> tuple[int, int]:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
-    title = "Codex Sessions - Up/Down/j/k move, Enter/o resume, n new, d delete, r refresh, q quit"
-    stdscr.addnstr(0, 0, title, w - 1, curses.A_BOLD)
-    stdscr.addnstr(1, 0, f"Total: {len(ordered)}", w - 1)
+    header_attr = curses.color_pair(2) | curses.A_BOLD if curses.has_colors() else curses.A_BOLD
+    section_attr = curses.color_pair(3) | curses.A_BOLD if curses.has_colors() else curses.A_BOLD
+    selected_attr = curses.color_pair(1) | curses.A_BOLD if curses.has_colors() else curses.A_REVERSE
+    status_attr = curses.color_pair(4) | curses.A_BOLD if curses.has_colors() else curses.A_BOLD
+    hint_attr = curses.color_pair(5) if curses.has_colors() else curses.A_DIM
 
-    list_top = 3
+    title = "CDX Session Manager"
+    subtitle = "Enter/o resume  n new  d delete  r refresh  q quit"
+    _safe_addnstr(stdscr, 0, 0, " " * max(1, w - 1), w - 1, header_attr)
+    _safe_addnstr(stdscr, 0, 2, title, w - 4, header_attr)
+    summary = f"Total: {len(ordered)}"
+    if ordered and 0 <= selected < len(ordered):
+        summary += f"  Selected: {selected + 1}/{len(ordered)}"
+    _safe_addnstr(stdscr, 1, 0, clip_text_cells(summary, w - 1), w - 1, hint_attr)
+    _safe_addnstr(stdscr, 2, 0, clip_text_cells(subtitle, w - 1), w - 1, hint_attr)
+
+    content_top = 3
     footer_line = h - 1
-    usable = max(1, footer_line - list_top)
-    per_item = 2
-    visible_items = max(1, usable // per_item)
+    content_height = max(1, footer_line - content_top)
 
+    split = w >= 110
+    if split:
+        left_w = max(48, int(w * 0.55))
+        right_w = max(30, w - left_w - 1)
+    else:
+        left_w = w
+        right_w = 0
+
+    left_top = content_top
+    left_left = 0
+    left_height = content_height
+    left_width = max(1, left_w)
+
+    if split:
+        right_top = content_top
+        right_left = left_w + 1
+        right_height = content_height
+        right_width = max(1, right_w)
+        _draw_panel_border(stdscr, right_top, right_left, right_height, right_width)
+        _safe_addnstr(stdscr, right_top, right_left + 2, "Details", right_width - 4, section_attr)
+
+    list_inner_top = left_top
+    list_inner_left = left_left
+    list_inner_height = left_height
+    list_inner_width = left_width
+    if split:
+        _draw_panel_border(stdscr, left_top, left_left, left_height, left_width)
+        _safe_addnstr(stdscr, left_top, left_left + 2, "Sessions", left_width - 4, section_attr)
+        list_inner_top += 1
+        list_inner_left += 1
+        list_inner_height -= 2
+        list_inner_width -= 2
+
+    per_item = 2
+    visible_items = max(1, list_inner_height // per_item)
     if selected < top:
         top = selected
     if selected >= top + visible_items:
@@ -340,17 +483,30 @@ def draw_tui(stdscr: curses.window, ordered: list[SessionInfo], selected: int, t
         if idx >= len(ordered):
             break
         s = ordered[idx]
-        y = list_top + row_idx * per_item
+        y = list_inner_top + row_idx * per_item
         marker = ">" if idx == selected else " "
-        title_text = clip_text(display_title(s), max(20, w - 30))
-        line1 = f"{marker} {idx + 1:>3}. {title_text} [{short_session_id(s.session_id)}]"
-        line2 = f"      cwd: {s.cwd or '-'}"
-        attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
-        stdscr.addnstr(y, 0, line1, w - 1, attr)
-        if y + 1 < footer_line:
-            stdscr.addnstr(y + 1, 0, clip_text(line2, w - 1), w - 1)
+        title_text = clip_text_cells(display_title(s), max(18, list_inner_width - 24))
+        line1 = f"{marker} {idx + 1:>3}. {title_text}"
+        line2 = f"      {short_session_id(s.session_id)}  {clip_text_cells(s.cwd or '-', max(10, list_inner_width - 20))}"
+        attr = selected_attr if idx == selected else curses.A_NORMAL
+        _safe_addnstr(stdscr, y, list_inner_left, line1, list_inner_width, attr)
+        if y + 1 < list_inner_top + list_inner_height:
+            _safe_addnstr(stdscr, y + 1, list_inner_left, line2, list_inner_width, curses.A_DIM)
 
-    stdscr.addnstr(footer_line, 0, clip_text(status, w - 1), w - 1, curses.A_DIM)
+    if split:
+        current = ordered[selected] if ordered and 0 <= selected < len(ordered) else None
+        detail_lines = _detail_lines(current)
+        start_y = right_top + 1
+        start_x = right_left + 1
+        max_h = max(1, right_height - 2)
+        max_w = max(1, right_width - 2)
+        for i, line in enumerate(detail_lines[:max_h]):
+            attr = section_attr if i == 0 else curses.A_NORMAL
+            _safe_addnstr(stdscr, start_y + i, start_x, clip_text_cells(line, max_w), max_w, attr)
+
+    status_text = status or "Ready."
+    _safe_addnstr(stdscr, footer_line, 0, " " * max(1, w - 1), w - 1)
+    _safe_addnstr(stdscr, footer_line, 0, clip_text_cells(status_text, w - 1), w - 1, status_attr)
     stdscr.refresh()
     return top, visible_items
 
@@ -384,6 +540,7 @@ def prompt_input(stdscr: curses.window, text: str) -> str:
 
 def run_tui(codex_home: Path) -> tuple[str, dict[str, str] | None]:
     def _inner(stdscr: curses.window) -> tuple[str, dict[str, str] | None]:
+        _init_colors()
         curses.curs_set(0)
         stdscr.keypad(True)
 
@@ -424,6 +581,18 @@ def run_tui(codex_home: Path) -> tuple[str, dict[str, str] | None]:
             if ch in (curses.KEY_DOWN, ord("j"), ord("J")):
                 if selected < len(ordered) - 1:
                     selected += 1
+                continue
+            if ch in (ord("g"),):
+                selected = 0
+                continue
+            if ch in (ord("G"),):
+                selected = max(0, len(ordered) - 1)
+                continue
+            if ch == curses.KEY_HOME:
+                selected = 0
+                continue
+            if ch == curses.KEY_END:
+                selected = max(0, len(ordered) - 1)
                 continue
             if ch == curses.KEY_PPAGE:
                 selected = max(0, selected - visible_items)
