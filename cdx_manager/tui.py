@@ -28,31 +28,32 @@ def _init_colors() -> None:
         return
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)
-    curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)
-    curses.init_pair(3, curses.COLOR_CYAN, -1)
-    curses.init_pair(4, curses.COLOR_YELLOW, -1)
-    curses.init_pair(5, curses.COLOR_GREEN, -1)
+    curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)   # selected row
+    curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # header bar
+    curses.init_pair(3, curses.COLOR_CYAN, -1)                    # section title
+    curses.init_pair(4, curses.COLOR_YELLOW, -1)                  # status line
+    curses.init_pair(5, curses.COLOR_WHITE, -1)                   # hint line
+    curses.init_pair(6, curses.COLOR_CYAN, -1)                    # detail key
+    curses.init_pair(7, curses.COLOR_WHITE, -1)                   # detail value
 
 
-def _detail_lines(session: SessionInfo | None) -> list[str]:
+def _detail_lines(session: SessionInfo | None) -> list[tuple[str, str] | str]:
     if session is None:
         return ["No session selected."]
     return [
         "Session Detail",
         "",
-        f"Title: {display_title(session)}",
-        f"Short ID: {short_session_id(session.session_id)}",
-        f"Full ID: {session.session_id}",
-        f"Updated: {session.updated_at or '-'}",
-        f"CWD: {session.cwd or '-'}",
-        f"Files: {len(session.files)}",
+        ("title", display_title(session)),
+        ("short_id", short_session_id(session.session_id)),
+        ("full_id", session.session_id),
+        ("updated_at", session.updated_at or "-"),
+        ("cwd", session.cwd or "-"),
+        ("files_count", str(len(session.files))),
         "",
-        "First Prompt:",
-        session.first_prompt or "-",
+        ("first_prompt", session.first_prompt or "-"),
         "",
-        "Session Files:",
-        *([str(p) for p in session.files] if session.files else ["-"]),
+        "session_files:",
+        *([("", str(p)) for p in session.files] if session.files else [("", "-")]),
     ]
 
 
@@ -139,12 +140,13 @@ def draw_tui(
     h, w = stdscr.getmaxyx()
     header_attr = curses.color_pair(2) | curses.A_BOLD if curses.has_colors() else curses.A_BOLD
     section_attr = curses.color_pair(3) | curses.A_BOLD if curses.has_colors() else curses.A_BOLD
-    selected_attr = curses.color_pair(1) | curses.A_BOLD if curses.has_colors() else curses.A_REVERSE
+    selected_attr = curses.color_pair(1) | curses.A_BOLD if curses.has_colors() else (curses.A_REVERSE | curses.A_BOLD)
     status_attr = curses.color_pair(4) | curses.A_BOLD if curses.has_colors() else curses.A_BOLD
     hint_attr = curses.color_pair(5) if curses.has_colors() else curses.A_DIM
+    detail_key_attr = curses.color_pair(6) | curses.A_BOLD if curses.has_colors() else curses.A_BOLD
+    detail_val_attr = curses.color_pair(7) if curses.has_colors() else curses.A_NORMAL
 
     title = "CDX Session Manager"
-    subtitle = "Enter/o resume  n new  d delete  v view  r refresh  q quit"
     _safe_addnstr(stdscr, 0, 0, " " * max(1, w - 1), w - 1, header_attr)
     _safe_addnstr(stdscr, 0, 2, title, w - 4, header_attr)
     selectable = selectable_rows(entries)
@@ -152,12 +154,12 @@ def draw_tui(
     summary = f"Total: {len(selectable)}  View: {format_view_mode(view_mode)}"
     if selectable:
         summary += f"  Selected: {selected_pos}/{len(selectable)}"
-    _safe_addnstr(stdscr, 1, 0, clip_text_cells(summary, w - 1), w - 1, hint_attr)
-    _safe_addnstr(stdscr, 2, 0, clip_text_cells(subtitle, w - 1), w - 1, hint_attr)
+    _safe_addnstr(stdscr, 1, 2, clip_text_cells(summary, w - 4), w - 4, hint_attr)
 
-    content_top = 3
-    footer_line = h - 1
-    content_height = max(1, footer_line - content_top)
+    content_top = 2
+    footer_help_line = h - 1
+    footer_status_line = h - 2 if h >= 6 else h - 1
+    content_height = max(1, footer_status_line - content_top)
 
     split = w >= 110
     if split:
@@ -192,7 +194,8 @@ def draw_tui(
         list_inner_height -= 2
         list_inner_width -= 2
 
-    visible_items = max(1, list_inner_height)
+    per_item = 1
+    visible_items = max(1, list_inner_height // per_item)
     if selected_row < top:
         top = selected_row
     if selected_row >= top + visible_items:
@@ -203,18 +206,28 @@ def draw_tui(
         if idx >= len(entries):
             break
         e = entries[idx]
-        y = list_inner_top + row_idx
+        y = list_inner_top + row_idx * per_item
         if e.get("type") == "header":
             header = f"[{clip_text_cells(str(e.get('title', '')), max(6, list_inner_width - 2))}]"
             _safe_addnstr(stdscr, y, list_inner_left, header, list_inner_width, section_attr)
+            if y + 1 < list_inner_top + list_inner_height:
+                _safe_addnstr(stdscr, y + 1, list_inner_left, "", list_inner_width)
             continue
 
         s = session_from_entry(e)
         if s is None:
             continue
         marker = ">" if idx == selected_row else " "
-        title_text = clip_text_cells(display_title(s), max(10, list_inner_width - 22))
-        line = f"{marker} {title_text}  {short_session_id(s.session_id)}"
+        id_text = short_session_id(s.session_id)
+        fixed_prefix = f"{marker} "
+        id_col = 14
+        title_max = max(12, min(38, list_inner_width // 2))
+        title_text = clip_text_cells(display_title(s), title_max)
+        title_col = f"{title_text:<{title_max}}"
+        used = len(fixed_prefix) + len(title_col) + 2 + id_col + 2
+        cwd_max = max(6, list_inner_width - used)
+        cwd_text = clip_text_cells(s.cwd or "-", cwd_max)
+        line = f"{fixed_prefix}{title_col}  {id_text:<{id_col}}  {cwd_text}"
         attr = selected_attr if idx == selected_row else curses.A_NORMAL
         _safe_addnstr(stdscr, y, list_inner_left, line, list_inner_width, attr)
 
@@ -225,13 +238,38 @@ def draw_tui(
         start_x = right_left + 1
         max_h = max(1, right_height - 2)
         max_w = max(1, right_width - 2)
-        for i, line in enumerate(detail_lines[:max_h]):
-            attr = section_attr if i == 0 else curses.A_NORMAL
-            _safe_addnstr(stdscr, start_y + i, start_x, clip_text_cells(line, max_w), max_w, attr)
+        for i, row in enumerate(detail_lines[:max_h]):
+            if isinstance(row, str) and i == 0:
+                _safe_addnstr(stdscr, start_y + i, start_x, clip_text_cells(row, max_w), max_w, section_attr)
+                continue
+            if isinstance(row, tuple):
+                key, value = row
+                key_text = f"{key:<12}" if key else " " * 12
+                key_cells = min(max_w, len(key_text) + 1)
+                _safe_addnstr(stdscr, start_y + i, start_x, key_text, key_cells, detail_key_attr)
+                _safe_addnstr(
+                    stdscr,
+                    start_y + i,
+                    start_x + key_cells,
+                    clip_text_cells(value.strip(), max_w - key_cells),
+                    max_w - key_cells,
+                    detail_val_attr,
+                )
+                continue
+            if isinstance(row, str) and row.endswith(":"):
+                _safe_addnstr(stdscr, start_y + i, start_x, clip_text_cells(row, max_w), max_w, detail_key_attr)
+                continue
+            if isinstance(row, str):
+                _safe_addnstr(stdscr, start_y + i, start_x, clip_text_cells(row, max_w), max_w, detail_val_attr)
 
-    status_text = status or "Ready."
-    _safe_addnstr(stdscr, footer_line, 0, " " * max(1, w - 1), w - 1)
-    _safe_addnstr(stdscr, footer_line, 0, clip_text_cells(status_text, w - 1), w - 1, status_attr)
+    status_text = f"Status: {status}" if status else "Status: idle"
+    _safe_addnstr(stdscr, footer_status_line, 0, " " * max(1, w - 1), w - 1)
+    _safe_addnstr(stdscr, footer_status_line, 0, clip_text_cells(status_text, w - 1), w - 1, status_attr)
+
+    if footer_help_line != footer_status_line:
+        key_hints = "Move: j/k, up/down, pgup/pgdn, g/G | Open: enter/o, n | Manage: d, v, r, q"
+        _safe_addnstr(stdscr, footer_help_line, 0, " " * max(1, w - 1), w - 1)
+        _safe_addnstr(stdscr, footer_help_line, 0, clip_text_cells(key_hints, w - 1), w - 1, hint_attr)
     stdscr.refresh()
     return top, visible_items
 
