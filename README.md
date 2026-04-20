@@ -12,6 +12,10 @@ A lightweight Codex session manager:
 - 在指定目录新建会话
 - 删除会话
 
+## Screenshot / 界面截图
+
+![CDX TUI Preview](assets/tui-preview.png)
+
 ## Why this exists / 为什么要做这个
 
 Codex's built-in conversation management still has room for improvement: scattered entry points, no direct deletion workflow, and friction when switching projects.  
