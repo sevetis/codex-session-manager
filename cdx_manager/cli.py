@@ -36,7 +36,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--full-id", action="store_true", help="show full id in list header (default shows shortened id)")
     p.add_argument("--new", dest="new_dir", type=Path, help=argparse.SUPPRESS)
     p.add_argument("--prompt", dest="new_prompt", default="", help=argparse.SUPPRESS)
-    p.add_argument("--all", action="store_true", help="delete all sessions")
     p.add_argument("--dry-run", action="store_true", help="preview only, no changes")
     p.add_argument("-y", "--yes", action="store_true", help="skip confirmation")
     p.add_argument("--codex-home", type=Path, default=default_codex_home(), help="Codex home dir (default: $CODEX_HOME or ~/.codex)")
@@ -49,7 +48,7 @@ def main() -> int:
     codex_home: Path = args.codex_home.expanduser()
 
     # Preferred new-session UX: `cdx <dir> [optional prompt]`
-    if args.targets and not args.list and not args.all:
+    if args.targets and not args.list:
         first = args.targets[0]
         if _looks_like_dir_arg(first):
             prompt_text = " ".join(args.targets[1:]).strip()
@@ -61,7 +60,7 @@ def main() -> int:
     if args.new_dir is not None:
         return run_codex_new(args.new_dir, args.new_prompt)
 
-    if not args.no_tui and not args.list and not args.all and not args.targets:
+    if not args.no_tui and not args.list and not args.targets:
         try:
             while True:
                 action, payload = run_tui(codex_home)
@@ -80,17 +79,14 @@ def main() -> int:
 
     if args.list:
         print_sessions(sessions, full_id=args.full_id)
-        if not args.all and not args.targets:
+        if not args.targets:
             return 0
 
-    if not args.all and not args.targets:
-        print("Nothing to delete. Use --list, --all, or provide session id(s).")
+    if not args.targets:
+        print("Nothing to delete. Use --list or provide session id(s).")
         return 1
 
-    if args.all:
-        target_ids = set(sessions.keys())
-    else:
-        target_ids = set(validate_ids(args.targets))
+    target_ids = set(validate_ids(args.targets))
 
     if not target_ids:
         print("No matching sessions to delete.")
