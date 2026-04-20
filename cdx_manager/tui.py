@@ -3,10 +3,15 @@ from __future__ import annotations
 import curses
 import os
 from pathlib import Path
+from typing import Any
 
 from .models import SessionInfo
 from .session_store import collect_sessions, execute_delete, sorted_sessions
 from .textutil import clip_text, clip_text_cells, display_title, short_session_id
+
+VIEW_TIME = "time"
+VIEW_CWD = "cwd"
+VIEW_MODES = (VIEW_TIME, VIEW_CWD)
 
 
 def _safe_addnstr(stdscr: curses.window, y: int, x: int, text: str, max_len: int, attr: int = 0) -> None:
@@ -68,7 +73,68 @@ def _draw_panel_border(stdscr: curses.window, top: int, left: int, height: int, 
     _safe_addnstr(stdscr, bottom, right, "+", 1)
 
 
-def draw_tui(stdscr: curses.window, ordered: list[SessionInfo], selected: int, top: int, status: str) -> tuple[int, int]:
+def _normalized_cwd(s: SessionInfo) -> str:
+    cwd = (s.cwd or "").strip()
+    return cwd if cwd else "(no cwd)"
+
+
+def _entry_header(title: str) -> dict[str, Any]:
+    return {"type": "header", "title": title}
+
+
+def _entry_session(s: SessionInfo) -> dict[str, Any]:
+    return {"type": "session", "session": s}
+
+
+def build_entries(ordered: list[SessionInfo], view_mode: str) -> list[dict[str, Any]]:
+    if view_mode == VIEW_TIME:
+        return [_entry_session(s) for s in ordered]
+
+    groups: dict[str, list[SessionInfo]] = {}
+    for s in ordered:
+        key = _normalized_cwd(s)
+        groups.setdefault(key, []).append(s)
+
+    group_items = []
+    for cwd, items in groups.items():
+        items_sorted = sorted(items, key=lambda x: (x.updated_at or "", x.session_id), reverse=True)
+        latest = items_sorted[0].updated_at or ""
+        group_items.append((cwd, items_sorted, latest))
+    group_items.sort(key=lambda t: (t[2], t[0]), reverse=True)
+
+    entries: list[dict[str, Any]] = []
+    for cwd, items, _latest in group_items:
+        entries.append(_entry_header(f"{cwd} ({len(items)})"))
+        for s in items:
+            entries.append(_entry_session(s))
+    return entries
+
+
+def selectable_rows(entries: list[dict[str, Any]]) -> list[int]:
+    return [i for i, e in enumerate(entries) if e.get("type") == "session"]
+
+
+def session_from_entry(entry: dict[str, Any]) -> SessionInfo | None:
+    if entry.get("type") != "session":
+        return None
+    s = entry.get("session")
+    return s if isinstance(s, SessionInfo) else None
+
+
+def format_view_mode(view_mode: str) -> str:
+    if view_mode == VIEW_CWD:
+        return "group-by-cwd"
+    return "time"
+
+
+def draw_tui(
+    stdscr: curses.window,
+    entries: list[dict[str, Any]],
+    selected_row: int,
+    top: int,
+    status: str,
+    view_mode: str,
+) -> tuple[int, int]:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
     header_attr = curses.color_pair(2) | curses.A_BOLD if curses.has_colors() else curses.A_BOLD
@@ -78,12 +144,14 @@ def draw_tui(stdscr: curses.window, ordered: list[SessionInfo], selected: int, t
     hint_attr = curses.color_pair(5) if curses.has_colors() else curses.A_DIM
 
     title = "CDX Session Manager"
-    subtitle = "Enter/o resume  n new  d delete  r refresh  q quit"
+    subtitle = "Enter/o resume  n new  d delete  v view  r refresh  q quit"
     _safe_addnstr(stdscr, 0, 0, " " * max(1, w - 1), w - 1, header_attr)
     _safe_addnstr(stdscr, 0, 2, title, w - 4, header_attr)
-    summary = f"Total: {len(ordered)}"
-    if ordered and 0 <= selected < len(ordered):
-        summary += f"  Selected: {selected + 1}/{len(ordered)}"
+    selectable = selectable_rows(entries)
+    selected_pos = selectable.index(selected_row) + 1 if selected_row in selectable else 0
+    summary = f"Total: {len(selectable)}  View: {format_view_mode(view_mode)}"
+    if selectable:
+        summary += f"  Selected: {selected_pos}/{len(selectable)}"
     _safe_addnstr(stdscr, 1, 0, clip_text_cells(summary, w - 1), w - 1, hint_attr)
     _safe_addnstr(stdscr, 2, 0, clip_text_cells(subtitle, w - 1), w - 1, hint_attr)
 
@@ -124,30 +192,34 @@ def draw_tui(stdscr: curses.window, ordered: list[SessionInfo], selected: int, t
         list_inner_height -= 2
         list_inner_width -= 2
 
-    per_item = 2
-    visible_items = max(1, list_inner_height // per_item)
-    if selected < top:
-        top = selected
-    if selected >= top + visible_items:
-        top = selected - visible_items + 1
+    visible_items = max(1, list_inner_height)
+    if selected_row < top:
+        top = selected_row
+    if selected_row >= top + visible_items:
+        top = selected_row - visible_items + 1
 
     for row_idx in range(visible_items):
         idx = top + row_idx
-        if idx >= len(ordered):
+        if idx >= len(entries):
             break
-        s = ordered[idx]
-        y = list_inner_top + row_idx * per_item
-        marker = ">" if idx == selected else " "
-        title_text = clip_text_cells(display_title(s), max(18, list_inner_width - 24))
-        line1 = f"{marker} {idx + 1:>3}. {title_text}"
-        line2 = f"      {short_session_id(s.session_id)}  {clip_text_cells(s.cwd or '-', max(10, list_inner_width - 20))}"
-        attr = selected_attr if idx == selected else curses.A_NORMAL
-        _safe_addnstr(stdscr, y, list_inner_left, line1, list_inner_width, attr)
-        if y + 1 < list_inner_top + list_inner_height:
-            _safe_addnstr(stdscr, y + 1, list_inner_left, line2, list_inner_width, curses.A_DIM)
+        e = entries[idx]
+        y = list_inner_top + row_idx
+        if e.get("type") == "header":
+            header = f"[{clip_text_cells(str(e.get('title', '')), max(6, list_inner_width - 2))}]"
+            _safe_addnstr(stdscr, y, list_inner_left, header, list_inner_width, section_attr)
+            continue
+
+        s = session_from_entry(e)
+        if s is None:
+            continue
+        marker = ">" if idx == selected_row else " "
+        title_text = clip_text_cells(display_title(s), max(10, list_inner_width - 22))
+        line = f"{marker} {title_text}  {short_session_id(s.session_id)}"
+        attr = selected_attr if idx == selected_row else curses.A_NORMAL
+        _safe_addnstr(stdscr, y, list_inner_left, line, list_inner_width, attr)
 
     if split:
-        current = ordered[selected] if ordered and 0 <= selected < len(ordered) else None
+        current = session_from_entry(entries[selected_row]) if entries and 0 <= selected_row < len(entries) else None
         detail_lines = _detail_lines(current)
         start_y = right_top + 1
         start_x = right_left + 1
@@ -197,70 +269,133 @@ def run_tui(codex_home: Path) -> tuple[str, dict[str, str] | None]:
         curses.curs_set(0)
         stdscr.keypad(True)
 
-        selected = 0
+        selected_row = 0
         top = 0
         status = ""
+        view_mode = VIEW_TIME
+        selected_session_id = ""
 
         while True:
             sessions = collect_sessions(codex_home)
             ordered = sorted_sessions(sessions)
-            if selected >= len(ordered):
-                selected = max(0, len(ordered) - 1)
+            entries = build_entries(ordered, view_mode)
+            selectable = selectable_rows(entries)
 
-            top, visible_items = draw_tui(stdscr, ordered, selected, top, status)
+            if selectable:
+                if selected_session_id:
+                    matched = None
+                    for i in selectable:
+                        s = session_from_entry(entries[i])
+                        if s is not None and s.session_id == selected_session_id:
+                            matched = i
+                            break
+                    selected_row = matched if matched is not None else selectable[0]
+                elif selected_row not in selectable:
+                    selected_row = selectable[0]
+            else:
+                selected_row = 0
+            if selectable:
+                s_now = session_from_entry(entries[selected_row])
+                if s_now is not None:
+                    selected_session_id = s_now.session_id
+
+            top, visible_items = draw_tui(stdscr, entries, selected_row, top, status, view_mode)
             status = ""
             ch = stdscr.getch()
 
             if ch in (ord("q"), ord("Q")):
                 return ("quit", None)
             if ch in (curses.KEY_ENTER, 10, 13, ord("o"), ord("O")):
-                if not ordered:
+                if not selectable:
                     status = "No session to resume."
                     continue
-                current = ordered[selected]
+                current = session_from_entry(entries[selected_row])
+                if current is None:
+                    status = "No session to resume."
+                    continue
                 payload = {"session_id": current.session_id, "cwd": current.cwd or ""}
                 return ("resume", payload)
             if ch in (ord("n"), ord("N")):
-                default_dir = ordered[selected].cwd if ordered else os.getcwd()
+                current = session_from_entry(entries[selected_row]) if selectable else None
+                default_dir = current.cwd if current is not None else os.getcwd()
                 entered = prompt_input(stdscr, f"New session dir (empty uses {default_dir})")
                 target_dir = entered or default_dir or os.getcwd()
                 prompt = prompt_input(stdscr, "Initial prompt (optional)")
                 payload = {"cwd": target_dir, "prompt": prompt}
                 return ("new", payload)
             if ch in (curses.KEY_UP, ord("k"), ord("K")):
-                if selected > 0:
-                    selected -= 1
+                if selectable and selected_row in selectable:
+                    pos = selectable.index(selected_row)
+                    if pos > 0:
+                        selected_row = selectable[pos - 1]
+                        s = session_from_entry(entries[selected_row])
+                        selected_session_id = s.session_id if s else selected_session_id
                 continue
             if ch in (curses.KEY_DOWN, ord("j"), ord("J")):
-                if selected < len(ordered) - 1:
-                    selected += 1
+                if selectable and selected_row in selectable:
+                    pos = selectable.index(selected_row)
+                    if pos < len(selectable) - 1:
+                        selected_row = selectable[pos + 1]
+                        s = session_from_entry(entries[selected_row])
+                        selected_session_id = s.session_id if s else selected_session_id
                 continue
             if ch in (ord("g"),):
-                selected = 0
+                if selectable:
+                    selected_row = selectable[0]
+                    s = session_from_entry(entries[selected_row])
+                    selected_session_id = s.session_id if s else selected_session_id
                 continue
             if ch in (ord("G"),):
-                selected = max(0, len(ordered) - 1)
+                if selectable:
+                    selected_row = selectable[-1]
+                    s = session_from_entry(entries[selected_row])
+                    selected_session_id = s.session_id if s else selected_session_id
                 continue
             if ch == curses.KEY_HOME:
-                selected = 0
+                if selectable:
+                    selected_row = selectable[0]
+                    s = session_from_entry(entries[selected_row])
+                    selected_session_id = s.session_id if s else selected_session_id
                 continue
             if ch == curses.KEY_END:
-                selected = max(0, len(ordered) - 1)
+                if selectable:
+                    selected_row = selectable[-1]
+                    s = session_from_entry(entries[selected_row])
+                    selected_session_id = s.session_id if s else selected_session_id
                 continue
             if ch == curses.KEY_PPAGE:
-                selected = max(0, selected - visible_items)
+                if selectable and selected_row in selectable:
+                    pos = selectable.index(selected_row)
+                    pos = max(0, pos - visible_items)
+                    selected_row = selectable[pos]
+                    s = session_from_entry(entries[selected_row])
+                    selected_session_id = s.session_id if s else selected_session_id
                 continue
             if ch == curses.KEY_NPAGE:
-                selected = min(max(0, len(ordered) - 1), selected + visible_items)
+                if selectable and selected_row in selectable:
+                    pos = selectable.index(selected_row)
+                    pos = min(len(selectable) - 1, pos + visible_items)
+                    selected_row = selectable[pos]
+                    s = session_from_entry(entries[selected_row])
+                    selected_session_id = s.session_id if s else selected_session_id
+                continue
+            if ch in (ord("v"), ord("V")):
+                idx = VIEW_MODES.index(view_mode)
+                view_mode = VIEW_MODES[(idx + 1) % len(VIEW_MODES)]
+                top = 0
+                status = f"Switched view: {format_view_mode(view_mode)}"
                 continue
             if ch in (ord("r"), ord("R")):
                 status = "Refreshed."
                 continue
             if ch in (ord("d"), ord("D"), ord("x"), ord("X"), curses.KEY_DC):
-                if not ordered:
+                if not selectable:
                     status = "No session to delete."
                     continue
-                current = ordered[selected]
+                current = session_from_entry(entries[selected_row])
+                if current is None:
+                    status = "No session to delete."
+                    continue
                 ok = confirm_delete(stdscr, f"Delete session {short_session_id(current.session_id)}: {clip_text(display_title(current), 50)}?")
                 if not ok:
                     status = "Delete canceled."
@@ -271,9 +406,14 @@ def run_tui(codex_home: Path) -> tuple[str, dict[str, str] | None]:
                     target_ids={current.session_id},
                     dry_run=False,
                 )
+                selected_session_id = ""
                 status = f"Deleted {short_session_id(current.session_id)} (files={removed_files}, index={removed_index})."
                 continue
 
-            status = "Unknown key. Use Up/Down/j/k, Enter/o resume, n new, d delete, r refresh, q quit."
+            if selectable and 0 <= selected_row < len(entries):
+                current = session_from_entry(entries[selected_row])
+                if current is not None:
+                    selected_session_id = current.session_id
+            status = "Unknown key. Use Up/Down/j/k, Enter/o resume, n new, d delete, v view, r refresh, q quit."
 
     return curses.wrapper(_inner)

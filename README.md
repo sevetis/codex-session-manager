@@ -83,6 +83,7 @@ cdx --new /path/to/project --prompt "start a refactor"
 - `Enter` or `o`: resume selected session
 - `n`: create a new session
 - `d`: delete selected session
+- `v`: switch view mode (time / grouped by cwd)
 - `r`: refresh
 - `q`: quit
 
@@ -92,5 +93,6 @@ cdx --new /path/to/project --prompt "start a refactor"
 - `Enter` 或 `o`: 恢复会话
 - `n`: 新建会话
 - `d`: 删除会话
+- `v`: 切换视图（按时间 / 按目录分组）
 - `r`: 刷新
 - `q`: 退出
