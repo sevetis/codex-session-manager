@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .codex_ops import switch_tmux_window
+from .codex_ops import run_codex_resume_background, switch_tmux_window
 from .models import SessionInfo
 from .session_store import collect_sessions, execute_delete, sorted_sessions
 from .textutil import char_cell_width, clip_text, clip_text_cells, display_title, pad_text_cells, short_session_id, text_cell_width
@@ -401,7 +401,7 @@ def run_tui(codex_home: Path) -> tuple[str, dict[str, str] | None]:
         selected_row = 0
         top = 0
         status = ""
-        view_mode = VIEW_TIME
+        view_mode = VIEW_CWD
         selected_session_id = ""
 
         while True:
@@ -442,8 +442,9 @@ def run_tui(codex_home: Path) -> tuple[str, dict[str, str] | None]:
                 if current is None:
                     status = "No session to resume."
                     continue
-                payload = {"session_id": current.session_id, "cwd": current.cwd or ""}
-                return ("resume_bg", payload)
+                ok, msg = run_codex_resume_background(current.session_id, current.cwd or "")
+                status = msg if ok else msg
+                continue
             if ch in (ord("b"), ord("B")):
                 status = "Use Enter/o to open selected session as tab."
                 continue

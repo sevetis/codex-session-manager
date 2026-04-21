@@ -7,7 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from .codex_ops import ensure_tmux_tab_keybindings, run_codex_new, run_codex_resume_background
+from .codex_ops import ensure_tmux_tab_keybindings, run_codex_new
 from .session_store import (
     collect_sessions,
     default_codex_home,
@@ -94,16 +94,6 @@ def main() -> int:
                 ensure_tmux_tab_keybindings()
             while True:
                 action, payload = run_tui(codex_home)
-                if action == "resume" and payload is not None:
-                    ok, msg = run_codex_resume_background(payload.get("session_id", ""), payload.get("cwd", ""))
-                    print(msg)
-                    continue
-                if action == "resume_bg" and payload is not None:
-                    ok, msg = run_codex_resume_background(payload.get("session_id", ""), payload.get("cwd", ""))
-                    print(msg)
-                    if not ok:
-                        print("Tip: in tmux mode this opens detached tabs; outside tmux it tries a new terminal window.")
-                    continue
                 if action == "new" and payload is not None:
                     run_codex_new(payload.get("cwd", ""), payload.get("prompt", ""))
                     continue
