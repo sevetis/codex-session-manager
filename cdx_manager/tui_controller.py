@@ -64,6 +64,12 @@ def _set_selection(selectable: list[int], state: UiState, pos: int) -> None:
     state.selected_row = selectable[pos]
 
 
+def _update_selected_session_id(entries: list[SessionEntry], state: UiState) -> None:
+    current = _current_session(entries, state)
+    if current is not None:
+        state.selected_session_id = current.session_id
+
+
 def _current_session(entries: list[SessionEntry], state: UiState) -> SessionInfo | None:
     if not entries or state.selected_row < 0 or state.selected_row >= len(entries):
         return None
@@ -146,25 +152,31 @@ def dispatch_key(
         return _handle_new(stdscr, entries, selectable, state)
     if ch in (curses.KEY_UP, ord("k"), ord("K")):
         _move_selection(selectable, state, -1)
+        _update_selected_session_id(entries, state)
         return DispatchResult()
     if ch in (curses.KEY_DOWN, ord("j"), ord("J")):
         _move_selection(selectable, state, 1)
+        _update_selected_session_id(entries, state)
         return DispatchResult()
     if ch in (ord("g"), curses.KEY_HOME):
         _set_selection(selectable, state, 0)
+        _update_selected_session_id(entries, state)
         return DispatchResult()
     if ch in (ord("G"), curses.KEY_END):
         _set_selection(selectable, state, len(selectable) - 1)
+        _update_selected_session_id(entries, state)
         return DispatchResult()
     if ch == curses.KEY_PPAGE:
         if selectable and state.selected_row in selectable:
             pos = selectable.index(state.selected_row)
             _set_selection(selectable, state, pos - visible_items)
+            _update_selected_session_id(entries, state)
         return DispatchResult()
     if ch == curses.KEY_NPAGE:
         if selectable and state.selected_row in selectable:
             pos = selectable.index(state.selected_row)
             _set_selection(selectable, state, pos + visible_items)
+            _update_selected_session_id(entries, state)
         return DispatchResult()
     if ch in (ord("v"), ord("V")):
         idx = VIEW_MODES.index(state.view_mode)

@@ -31,22 +31,26 @@ class TuiControllerTests(unittest.TestCase):
         self.assertEqual(state.selected_row, 1)
 
     def test_dispatch_navigation_and_jump(self) -> None:
-        state = UiState(selected_row=1)
+        state = UiState(selected_row=1, selected_session_id="019da6c7-3f44-7c51-bfae-9d1bcc0867ee")
         entries = self._entries()
         selectable = [1, 2]
         repo = DummyRepo()
 
         dispatch_key(None, ord("j"), entries, selectable, 5, state, repo)
         self.assertEqual(state.selected_row, 2)
+        self.assertEqual(state.selected_session_id, "019da6c7-3f44-7c51-bfae-9d1bcc0867ef")
 
         dispatch_key(None, ord("k"), entries, selectable, 5, state, repo)
         self.assertEqual(state.selected_row, 1)
+        self.assertEqual(state.selected_session_id, "019da6c7-3f44-7c51-bfae-9d1bcc0867ee")
 
         dispatch_key(None, ord("G"), entries, selectable, 5, state, repo)
         self.assertEqual(state.selected_row, 2)
+        self.assertEqual(state.selected_session_id, "019da6c7-3f44-7c51-bfae-9d1bcc0867ef")
 
         dispatch_key(None, ord("g"), entries, selectable, 5, state, repo)
         self.assertEqual(state.selected_row, 1)
+        self.assertEqual(state.selected_session_id, "019da6c7-3f44-7c51-bfae-9d1bcc0867ee")
 
     def test_dispatch_view_toggle_refresh_and_quit(self) -> None:
         state = UiState(view_mode=VIEW_CWD)
