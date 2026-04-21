@@ -3,6 +3,7 @@ from __future__ import annotations
 import curses
 from pathlib import Path
 
+from .codex_ops import close_managed_tmux_tabs
 from .tui_controller import dispatch_key, sync_selection
 from .tui_render import draw_tui, init_colors
 from .tui_repo import SessionRepository
@@ -26,7 +27,6 @@ def run_tui(codex_home: Path) -> tuple[str, dict[str, str] | None]:
 
             entries = build_entries(repo.ordered(), state.view_mode)
             selectable = sync_selection(entries, state)
-
             state.top, visible_items = draw_tui(
                 stdscr,
                 entries,
@@ -48,6 +48,7 @@ def run_tui(codex_home: Path) -> tuple[str, dict[str, str] | None]:
                 repo=repo,
             )
             if result.action == "quit":
+                close_managed_tmux_tabs()
                 return ("quit", None)
             if result.action == "new":
                 return ("new", result.payload)

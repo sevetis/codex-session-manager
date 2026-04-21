@@ -126,17 +126,15 @@ def draw_tui(
     detail_val_attr = curses.color_pair(7) if curses.has_colors() else curses.A_NORMAL
     group_header_attr = curses.color_pair(8) | curses.A_BOLD if curses.has_colors() else section_attr
 
-    safe_addnstr(stdscr, 0, 0, " " * max(1, w - 1), w - 1, header_attr)
-    safe_addnstr(stdscr, 0, 2, "CDX Session Manager", w - 4, header_attr)
-
     selectable = selectable_rows(entries)
     selected_pos = selectable.index(selected_row) + 1 if selected_row in selectable else 0
     summary = f"Total: {len(selectable)}  View: {format_view_mode(view_mode)}"
     if selectable:
         summary += f"  Selected: {selected_pos}/{len(selectable)}"
-    safe_addnstr(stdscr, 1, 2, clip_text_cells(summary, w - 4), w - 4, hint_attr)
+    safe_addnstr(stdscr, 0, 0, " " * max(1, w - 1), w - 1, header_attr)
+    safe_addnstr(stdscr, 0, 2, clip_text_cells(summary, w - 4), w - 4, hint_attr)
 
-    content_top = 2
+    content_top = 1
     footer_help_line = h - 1
     footer_status_line = h - 2 if h >= 6 else h - 1
     content_height = max(1, footer_status_line - content_top)

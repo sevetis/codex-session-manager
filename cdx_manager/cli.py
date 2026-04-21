@@ -7,7 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from .codex_ops import ensure_tmux_tab_keybindings, run_codex_new
+from .codex_ops import ensure_tmux_manager_window_name, ensure_tmux_statusline, ensure_tmux_tab_keybindings, run_codex_new
 from .session_store import (
     collect_sessions,
     default_codex_home,
@@ -93,6 +93,8 @@ def main() -> int:
         try:
             if os.environ.get("TMUX"):
                 ensure_tmux_tab_keybindings()
+                ensure_tmux_statusline()
+                ensure_tmux_manager_window_name()
             while True:
                 action, payload = run_tui(codex_home)
                 if action == "new" and payload is not None:

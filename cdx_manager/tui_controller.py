@@ -84,7 +84,11 @@ def _handle_open(entries: list[SessionEntry], selectable: list[int], state: UiSt
     if current is None:
         state.status = "No session to resume."
         return DispatchResult()
-    ok, msg = run_codex_resume_background(current.session_id, current.cwd or "")
+    ok, msg = run_codex_resume_background(
+        current.session_id,
+        current.cwd or "",
+        tab_label=display_title(current),
+    )
     state.status = msg if ok else msg
     return DispatchResult()
 
