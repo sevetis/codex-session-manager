@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import curses
+import os
+import shutil
+import sys
 from pathlib import Path
 
-from .codex_ops import run_codex_new, run_codex_resume
+from .codex_ops import ensure_tmux_tab_keybindings, run_codex_new, run_codex_resume_background
 from .session_store import (
     collect_sessions,
     default_codex_home,
@@ -40,12 +43,37 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-y", "--yes", action="store_true", help="skip confirmation")
     p.add_argument("--codex-home", type=Path, default=default_codex_home(), help="Codex home dir (default: $CODEX_HOME or ~/.codex)")
     p.add_argument("--no-tui", action="store_true", help="disable default interactive TUI mode")
+    p.add_argument("--no-auto-tmux", action="store_true", help=argparse.SUPPRESS)
     return p.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     codex_home: Path = args.codex_home.expanduser()
+
+    # Auto-host manager in a dedicated tmux session so tab-like workflow works
+    # in the same terminal window without requiring users to manually start tmux.
+    should_auto_tmux = (
+        not args.no_auto_tmux
+        and not args.no_tui
+        and not args.list
+        and not args.targets
+        and not os.environ.get("TMUX")
+        and shutil.which("tmux") is not None
+    )
+    if should_auto_tmux:
+        launcher = Path(__file__).resolve().parent.parent / "codex_session_manager.py"
+        cmd = [
+            "tmux",
+            "new-session",
+            "-A",
+            "-s",
+            "cdx",
+            sys.executable,
+            str(launcher),
+            "--no-auto-tmux",
+        ]
+        os.execvp(cmd[0], cmd)
 
     # Preferred new-session UX: `cdx <dir> [optional prompt]`
     if args.targets and not args.list:
@@ -62,10 +90,19 @@ def main() -> int:
 
     if not args.no_tui and not args.list and not args.targets:
         try:
+            if os.environ.get("TMUX"):
+                ensure_tmux_tab_keybindings()
             while True:
                 action, payload = run_tui(codex_home)
                 if action == "resume" and payload is not None:
-                    run_codex_resume(payload.get("session_id", ""), payload.get("cwd", ""))
+                    ok, msg = run_codex_resume_background(payload.get("session_id", ""), payload.get("cwd", ""))
+                    print(msg)
+                    continue
+                if action == "resume_bg" and payload is not None:
+                    ok, msg = run_codex_resume_background(payload.get("session_id", ""), payload.get("cwd", ""))
+                    print(msg)
+                    if not ok:
+                        print("Tip: in tmux mode this opens detached tabs; outside tmux it tries a new terminal window.")
                     continue
                 if action == "new" and payload is not None:
                     run_codex_new(payload.get("cwd", ""), payload.get("prompt", ""))
@@ -74,6 +111,9 @@ def main() -> int:
         except curses.error:
             print("TUI could not start in this terminal. Try --list or run in a real TTY.")
             return 1
+        except KeyboardInterrupt:
+            print()
+            return 130
 
     sessions = collect_sessions(codex_home)
 

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .codex_ops import switch_tmux_window
 from .models import SessionInfo
 from .session_store import collect_sessions, execute_delete, sorted_sessions
 from .textutil import char_cell_width, clip_text, clip_text_cells, display_title, pad_text_cells, short_session_id, text_cell_width
@@ -341,7 +342,7 @@ def draw_tui(
     _safe_addnstr(stdscr, footer_status_line, 0, clip_text_cells(status_text, w - 1), w - 1, status_attr)
 
     if footer_help_line != footer_status_line:
-        key_hints = "Move: j/k, up/down, pgup/pgdn, g/G | Open: enter/o, n | Manage: d, v, r, q"
+        key_hints = "Move: j/k, up/down, pgup/pgdn, g/G,[,] | Open: enter/o, n | Manage: d, v, r, q"
         _safe_addnstr(stdscr, footer_help_line, 0, " " * max(1, w - 1), w - 1)
         _safe_addnstr(stdscr, footer_help_line, 0, clip_text_cells(key_hints, w - 1), w - 1, hint_attr)
     stdscr.refresh()
@@ -442,7 +443,10 @@ def run_tui(codex_home: Path) -> tuple[str, dict[str, str] | None]:
                     status = "No session to resume."
                     continue
                 payload = {"session_id": current.session_id, "cwd": current.cwd or ""}
-                return ("resume", payload)
+                return ("resume_bg", payload)
+            if ch in (ord("b"), ord("B")):
+                status = "Use Enter/o to open selected session as tab."
+                continue
             if ch in (ord("n"), ord("N")):
                 current = session_from_entry(entries[selected_row]) if selectable else None
                 default_dir = current.cwd if current is not None else os.getcwd()
@@ -518,6 +522,14 @@ def run_tui(codex_home: Path) -> tuple[str, dict[str, str] | None]:
                 view_mode = VIEW_MODES[(idx + 1) % len(VIEW_MODES)]
                 top = 0
                 status = f"Switched view: {format_view_mode(view_mode)}"
+                continue
+            if ch == ord("]"):
+                ok, msg = switch_tmux_window(next_window=True)
+                status = msg if ok else msg
+                continue
+            if ch == ord("["):
+                ok, msg = switch_tmux_window(next_window=False)
+                status = msg if ok else msg
                 continue
             if ch in (ord("r"), ord("R")):
                 status = "Refreshed."
