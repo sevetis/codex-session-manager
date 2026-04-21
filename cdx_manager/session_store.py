@@ -4,13 +4,18 @@ import json
 import os
 import re
 import shutil
-import sys
 from pathlib import Path
 
 from .models import SessionInfo
 from .textutil import clip_text, display_title, short_session_id
 
 ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+class InvalidSessionIdsError(ValueError):
+    def __init__(self, bad_ids: list[str]) -> None:
+        super().__init__("Invalid session id(s)")
+        self.bad_ids = bad_ids
 
 
 def default_codex_home() -> Path:
@@ -182,10 +187,7 @@ def validate_ids(ids: list[str]) -> list[str]:
         else:
             bad.append(sid)
     if bad:
-        print("Invalid session id(s):")
-        for sid in bad:
-            print(f"- {sid}")
-        sys.exit(2)
+        raise InvalidSessionIdsError(bad)
     return valid
 
 

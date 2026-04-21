@@ -12,6 +12,7 @@ from .session_store import (
     collect_sessions,
     default_codex_home,
     execute_delete,
+    InvalidSessionIdsError,
     print_sessions,
     validate_ids,
 )
@@ -116,7 +117,13 @@ def main() -> int:
         print("Nothing to delete. Use --list or provide session id(s).")
         return 1
 
-    target_ids = set(validate_ids(args.targets))
+    try:
+        target_ids = set(validate_ids(args.targets))
+    except InvalidSessionIdsError as exc:
+        print("Invalid session id(s):")
+        for sid in exc.bad_ids:
+            print(f"- {sid}")
+        return 2
 
     if not target_ids:
         print("No matching sessions to delete.")
