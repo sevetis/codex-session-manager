@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .codex_ops import close_managed_tmux_tabs, run_codex_resume_background, switch_tmux_window
+from .codex_ops import close_managed_tmux_tabs, close_tmux_tabs_for_session, run_codex_resume_background, switch_tmux_window
 from .session_store import execute_delete
 from .textutil import clip_text_cells, display_title, pad_text_cells, short_session_id
 from .tui_controller import sync_selection
@@ -13,11 +13,13 @@ from .tui_state import VIEW_MODES, UiState, build_entries, format_view_mode, ses
 
 try:
     from prompt_toolkit.application import Application
+    from prompt_toolkit.filters import Condition
     from prompt_toolkit.formatted_text import StyleAndTextTuples
     from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
+    from prompt_toolkit.keys import Keys
+    from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, VSplit, Window
+    from prompt_toolkit.layout.containers import ConditionalContainer
     from prompt_toolkit.layout.controls import FormattedTextControl
-    from prompt_toolkit.shortcuts import input_dialog, yes_no_dialog
     from prompt_toolkit.styles import Style
 except Exception as exc:  # pragma: no cover
     raise RuntimeError("prompt_toolkit is not installed") from exc
@@ -59,6 +61,17 @@ def _build_style(theme: str) -> Style:
                 "selected": "bg:#2c6ea3 #ffffff bold",
                 "key": "#1f679b bold",
                 "value": "#13293a",
+                "confirm": "bg:#f8fbff #10324f",
+                "confirm_title": "bg:#2c6ea3 #ffffff bold",
+                "confirm_label": "#2a6f9f bold",
+                "confirm_value": "#12344f",
+                "confirm_warn": "#9b2c2c bold",
+                "confirm_hint": "#3d4f63",
+                "new": "bg:#f4f9ff #0f324f",
+                "new_title": "bg:#2c6ea3 #ffffff bold",
+                "new_label": "#2a6f9f bold",
+                "new_value": "#12344f",
+                "new_hint": "#3d4f63",
             }
         )
 
@@ -79,6 +92,17 @@ def _build_style(theme: str) -> Style:
             "selected": "bg:#2a4b6f #ffffff bold",
             "key": "#8fd0ff bold",
             "value": "#eef3f8",
+            "confirm": "bg:#1c2632 #dce8f2",
+            "confirm_title": "bg:#2a4b6f #ffffff bold",
+            "confirm_label": "#8fd0ff bold",
+            "confirm_value": "#eef3f8",
+            "confirm_warn": "#ff9f9f bold",
+            "confirm_hint": "#9ab0c8",
+            "new": "bg:#1a2430 #dce8f2",
+            "new_title": "bg:#2a4b6f #ffffff bold",
+            "new_label": "#8fd0ff bold",
+            "new_value": "#eef3f8",
+            "new_hint": "#9ab0c8",
         }
     )
 
@@ -92,6 +116,13 @@ def run_tui_ptk(codex_home: Path) -> tuple[str, dict[str, str] | None]:
     selectable = []
     status = "ready"
     top = 0
+    pending_delete_session_id = ""
+    new_mode = False
+    new_step = "cwd"
+    new_default_dir = str(Path.cwd())
+    new_cwd_value = ""
+    new_prompt_value = ""
+    new_input_value = ""
 
     def current_session() -> Any:
         if not entries or state.selected_row < 0 or state.selected_row >= len(entries):
@@ -161,6 +192,119 @@ def run_tui_ptk(codex_home: Path) -> tuple[str, dict[str, str] | None]:
         nonlocal status
         status = msg
         app.invalidate()
+
+    def clear_pending_delete() -> None:
+        nonlocal pending_delete_session_id
+        pending_delete_session_id = ""
+
+    def has_pending_delete() -> bool:
+        return bool(pending_delete_session_id)
+
+    def clear_new_mode() -> None:
+        nonlocal new_mode, new_step, new_default_dir, new_cwd_value, new_prompt_value, new_input_value
+        new_mode = False
+        new_step = "cwd"
+        new_default_dir = str(Path.cwd())
+        new_cwd_value = ""
+        new_prompt_value = ""
+        new_input_value = ""
+
+    def has_pending_new() -> bool:
+        return new_mode
+
+    def start_new_mode() -> None:
+        nonlocal new_mode, new_step, new_default_dir, new_input_value
+        cur = current_session()
+        new_default_dir = (cur.cwd if cur is not None else str(Path.cwd())) or str(Path.cwd())
+        new_mode = True
+        new_step = "cwd"
+        new_input_value = ""
+        set_status("New session: enter directory path, Enter to continue, Esc to cancel.")
+
+    def require_modal_idle() -> bool:
+        if has_pending_delete():
+            set_status("Delete confirmation is active. Press y to confirm, c/Esc to cancel.")
+            return True
+        if has_pending_new():
+            set_status("New session input is active. Enter to continue, Esc to cancel.")
+            return True
+        return False
+
+    def request_delete_confirm() -> None:
+        nonlocal pending_delete_session_id
+        cur = current_session()
+        if cur is None:
+            set_status("No session to delete.")
+            return
+        pending_delete_session_id = cur.session_id
+        set_status(
+            "Confirm delete: press y to delete, c/Esc to cancel "
+            f"({short_session_id(cur.session_id)} {display_title(cur)})."
+        )
+
+    def confirm_delete_now() -> None:
+        nonlocal pending_delete_session_id
+        if not pending_delete_session_id:
+            return
+        sid = pending_delete_session_id
+        clear_pending_delete()
+        cur = repo.sessions.get(sid)
+        if cur is None:
+            set_status("Session not found. Refresh and try again.")
+            return
+        close_ok, close_msg = close_tmux_tabs_for_session(cur.session_id)
+        removed_files, removed_index, _ = execute_delete(
+            codex_home=repo.codex_home,
+            sessions=repo.sessions,
+            target_ids={cur.session_id},
+            dry_run=False,
+        )
+        state.selected_session_id = ""
+        refresh(force_repo=True)
+        close_note = ""
+        if close_ok and "Closed " in close_msg:
+            close_note = f", {close_msg.lower()}"
+        set_status(
+            f"Deleted {short_session_id(cur.session_id)} "
+            f"(files={removed_files}, index={removed_index}{close_note})."
+        )
+
+    def handle_new_submit() -> tuple[str, dict[str, str] | None] | None:
+        nonlocal new_step, new_cwd_value, new_prompt_value, new_input_value
+        if not new_mode:
+            return None
+        if new_step == "cwd":
+            new_cwd_value = new_input_value.strip() or new_default_dir
+            new_input_value = ""
+            new_step = "prompt"
+            set_status("New session: enter initial prompt (optional), Enter to create, Esc to cancel.")
+            app.invalidate()
+            return None
+        new_prompt_value = new_input_value.strip()
+        payload = {"cwd": new_cwd_value, "prompt": new_prompt_value}
+        clear_new_mode()
+        return ("new", payload)
+
+    def new_dialog_text() -> StyleAndTextTuples:
+        if not new_mode:
+            return [("class:new_title", " New Session "), ("", "\n"), ("class:new_value", " ")]
+        if new_step == "cwd":
+            label = "Directory"
+            hint = f"Default: {fit(new_default_dir, 68)}"
+        else:
+            label = "Prompt"
+            hint = "Optional initial prompt."
+        cur_val = new_input_value if new_input_value else ""
+        return [
+            ("class:new_title", " New Session "),
+            ("", "\n"),
+            ("class:new_label", f"{label}\n"),
+            ("class:new_value", cur_val or " "),
+            ("", "\n"),
+            ("class:new_hint", hint),
+            ("", "\n"),
+            ("class:new_hint", "[Enter] next/create    [Esc] cancel"),
+        ]
 
     def move(delta: int) -> None:
         if not selectable or state.selected_row not in selectable:
@@ -258,40 +402,83 @@ def run_tui_ptk(codex_home: Path) -> tuple[str, dict[str, str] | None]:
             msg += f"  selected {selected_pos}/{len(selectable)}"
         return [("class:summary", msg)]
 
-    summary_ctrl = FormattedTextControl(lambda: summary_text())
-    left_title_ctrl = FormattedTextControl(lambda: [("class:panel", " Sessions ")])
-    right_title_ctrl = FormattedTextControl(lambda: [("class:panel", " Detail ")])
-    left_ctrl = FormattedTextControl(lambda: left_text())
-    right_ctrl = FormattedTextControl(lambda: detail_text())
-    status_ctrl = FormattedTextControl(lambda: [("class:status", f"Status: {status}")])
+    def delete_dialog_text() -> StyleAndTextTuples:
+        cur = repo.sessions.get(pending_delete_session_id) if pending_delete_session_id else None
+        if cur is None:
+            return [
+                ("class:confirm_title", " Delete Session "),
+                ("", "\n"),
+                ("class:confirm_value", "Session not found."),
+            ]
+        return [
+            ("class:confirm_title", " Delete Session "),
+            ("", "\n"),
+            ("class:confirm_label", "title  "),
+            ("class:confirm_value", fit(display_title(cur), 70)),
+            ("", "\n"),
+            ("class:confirm_label", "id     "),
+            ("class:confirm_value", short_session_id(cur.session_id)),
+            ("", "\n"),
+            ("class:confirm_label", "cwd    "),
+            ("class:confirm_value", fit(cur.cwd or "-", 70)),
+            ("", "\n"),
+            ("", "\n"),
+            ("class:confirm_warn", "This action cannot be undone."),
+            ("", "\n"),
+            ("class:confirm_hint", "[y] Delete    [c] Cancel    [Esc] Cancel"),
+        ]
+
+    summary_ctrl = FormattedTextControl(lambda: summary_text(), show_cursor=False)
+    left_title_ctrl = FormattedTextControl(lambda: [("class:panel", " Sessions ")], show_cursor=False)
+    right_title_ctrl = FormattedTextControl(lambda: [("class:panel", " Detail ")], show_cursor=False)
+    left_ctrl = FormattedTextControl(lambda: left_text(), show_cursor=False)
+    right_ctrl = FormattedTextControl(lambda: detail_text(), show_cursor=False)
+    delete_ctrl = FormattedTextControl(lambda: delete_dialog_text(), show_cursor=False)
+    new_ctrl = FormattedTextControl(lambda: new_dialog_text(), show_cursor=False)
+    status_ctrl = FormattedTextControl(lambda: [("class:status", f"Status: {status}")], show_cursor=False)
     help_ctrl = FormattedTextControl(
         lambda: [
             (
                 "class:help",
-                "j/k move  g/G jump  PgUp/PgDn page  Enter/o open  n new  d delete  v view  r refresh  [ ] tab  q quit",
+                "j/k move  g/G jump  PgUp/PgDn page  Enter/o open  n new  d delete  y confirm  c cancel  v view  r refresh  [ ] tab  q quit",
             )
-        ]
+        ],
+        show_cursor=False,
     )
 
     kb = KeyBindings()
 
     @kb.add("q")
     def _quit(_event) -> None:
+        if has_pending_delete():
+            clear_pending_delete()
+            set_status("Delete canceled.")
+            return
+        if has_pending_new():
+            clear_new_mode()
+            set_status("New session canceled.")
+            return
         close_managed_tmux_tabs()
         app.exit(result=("quit", None))
 
     @kb.add("j")
     @kb.add("down")
     def _down(_event) -> None:
+        if require_modal_idle():
+            return
         move(1)
 
     @kb.add("k")
     @kb.add("up")
     def _up(_event) -> None:
+        if require_modal_idle():
+            return
         move(-1)
 
     @kb.add("g")
     def _top(_event) -> None:
+        if require_modal_idle():
+            return
         if selectable:
             state.selected_row = selectable[0]
             cur = current_session()
@@ -302,6 +489,8 @@ def run_tui_ptk(codex_home: Path) -> tuple[str, dict[str, str] | None]:
 
     @kb.add("G")
     def _bottom(_event) -> None:
+        if require_modal_idle():
+            return
         if selectable:
             state.selected_row = selectable[-1]
             cur = current_session()
@@ -312,14 +501,20 @@ def run_tui_ptk(codex_home: Path) -> tuple[str, dict[str, str] | None]:
 
     @kb.add("pageup")
     def _pgup(_event) -> None:
+        if require_modal_idle():
+            return
         move(-visible_rows())
 
     @kb.add("pagedown")
     def _pgdn(_event) -> None:
+        if require_modal_idle():
+            return
         move(visible_rows())
 
     @kb.add("v")
     def _view(_event) -> None:
+        if require_modal_idle():
+            return
         idx = VIEW_MODES.index(state.view_mode)
         state.view_mode = VIEW_MODES[(idx + 1) % len(VIEW_MODES)]
         refresh(force_repo=False)
@@ -327,22 +522,35 @@ def run_tui_ptk(codex_home: Path) -> tuple[str, dict[str, str] | None]:
 
     @kb.add("r")
     def _refresh(_event) -> None:
+        if require_modal_idle():
+            return
         refresh(force_repo=True)
         set_status("Refreshed.")
 
     @kb.add("]")
     def _next_tab(_event) -> None:
+        if require_modal_idle():
+            return
         ok, msg = switch_tmux_window(next_window=True)
         set_status(msg if ok else msg)
 
     @kb.add("[")
     def _prev_tab(_event) -> None:
+        if require_modal_idle():
+            return
         ok, msg = switch_tmux_window(next_window=False)
         set_status(msg if ok else msg)
 
     @kb.add("enter")
     @kb.add("o")
-    def _open(_event) -> None:
+    def _open_or_submit(_event) -> None:
+        if has_pending_new():
+            result = handle_new_submit()
+            if result is not None:
+                app.exit(result=result)
+            return
+        if require_modal_idle():
+            return
         cur = current_session()
         if cur is None:
             set_status("No session to resume.")
@@ -354,43 +562,62 @@ def run_tui_ptk(codex_home: Path) -> tuple[str, dict[str, str] | None]:
     @kb.add("x")
     @kb.add("delete")
     def _delete(_event) -> None:
-        cur = current_session()
-        if cur is None:
-            set_status("No session to delete.")
+        if has_pending_new():
+            set_status("Finish/cancel new session input first.")
             return
-        ok = yes_no_dialog(
-            title="Delete",
-            text=f"Delete {short_session_id(cur.session_id)}: {display_title(cur)}?",
-        ).run()
-        if not ok:
+        request_delete_confirm()
+
+    @kb.add("y")
+    @kb.add("Y")
+    def _confirm_delete(_event) -> None:
+        confirm_delete_now()
+
+    @kb.add("c")
+    @kb.add("C")
+    def _cancel_delete(_event) -> None:
+        if pending_delete_session_id:
+            clear_pending_delete()
             set_status("Delete canceled.")
             return
-        removed_files, removed_index, _ = execute_delete(
-            codex_home=repo.codex_home,
-            sessions=repo.sessions,
-            target_ids={cur.session_id},
-            dry_run=False,
-        )
-        state.selected_session_id = ""
-        refresh(force_repo=True)
-        set_status(f"Deleted {short_session_id(cur.session_id)} (files={removed_files}, index={removed_index}).")
 
     @kb.add("n")
     def _new(_event) -> None:
-        cur = current_session()
-        default_dir = (cur.cwd if cur is not None else str(Path.cwd())) or str(Path.cwd())
-        entered = input_dialog(title="New Session", text=f"Directory (default: {default_dir})").run()
-        if entered is None:
-            set_status("New session canceled.")
+        if has_pending_delete():
+            set_status("Finish/cancel delete confirmation first.")
             return
-        target_dir = entered.strip() or default_dir
-        prompt = input_dialog(title="New Session", text="Initial prompt (optional)").run()
-        if prompt is None:
-            set_status("New session canceled.")
-            return
-        app.exit(result=("new", {"cwd": target_dir, "prompt": prompt.strip()}))
+        start_new_mode()
 
-    root = HSplit(
+    @kb.add("escape")
+    def _escape_modal(_event) -> None:
+        if has_pending_delete():
+            clear_pending_delete()
+            set_status("Delete canceled.")
+            return
+        if has_pending_new():
+            clear_new_mode()
+            set_status("New session canceled.")
+            return
+
+    @kb.add("backspace")
+    def _backspace_new(_event) -> None:
+        nonlocal new_input_value
+        if not has_pending_new():
+            return
+        if new_input_value:
+            new_input_value = new_input_value[:-1]
+            app.invalidate()
+
+    @kb.add(Keys.Any)
+    def _type_new(event) -> None:
+        nonlocal new_input_value
+        if not has_pending_new():
+            return
+        text = event.data
+        if text and text.isprintable() and text not in ("\n", "\r"):
+            new_input_value += text
+            app.invalidate()
+
+    base_root = HSplit(
         [
             Window(content=summary_ctrl, height=1, style="class:summarybar"),
             VSplit(
@@ -413,6 +640,32 @@ def run_tui_ptk(codex_home: Path) -> tuple[str, dict[str, str] | None]:
             Window(content=status_ctrl, height=1, style="class:statusbar"),
             Window(content=help_ctrl, height=1, style="class:helpbar"),
         ]
+    )
+    root = FloatContainer(
+        content=base_root,
+        floats=[
+            Float(
+                left=8,
+                right=8,
+                top=4,
+                bottom=4,
+                content=ConditionalContainer(
+                    content=Window(content=delete_ctrl, wrap_lines=True, style="class:confirm"),
+                    filter=Condition(lambda: bool(pending_delete_session_id)),
+                ),
+            )
+            ,
+            Float(
+                left=8,
+                right=8,
+                top=5,
+                bottom=5,
+                content=ConditionalContainer(
+                    content=Window(content=new_ctrl, wrap_lines=True, style="class:new"),
+                    filter=Condition(lambda: new_mode),
+                ),
+            ),
+        ],
     )
 
     style = _build_style(theme)

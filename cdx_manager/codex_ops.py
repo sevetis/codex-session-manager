@@ -33,6 +33,15 @@ class TmuxTabInfo:
     current_name: str
 
 
+@dataclass(frozen=True)
+class TmuxWindowRow:
+    window_id: str
+    index: str
+    name: str
+    session_id: str
+    manager_flag: str
+
+
 def _is_managed_tab_name(name: str) -> bool:
     return name.startswith("cdx-") or name.startswith("s-")
 
@@ -89,6 +98,43 @@ def _parse_tmux_windows(raw: str) -> TmuxTabInfo | None:
         current_index=current_index or "?",
         current_name=current_name or "?",
     )
+
+
+def _parse_tmux_window_rows(raw: str) -> list[TmuxWindowRow]:
+    rows: list[TmuxWindowRow] = []
+    for ln in raw.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        parts = ln.split("\t")
+        if len(parts) < 3:
+            continue
+        rows.append(
+            TmuxWindowRow(
+                window_id=parts[0] if len(parts) >= 1 else "",
+                index=parts[1] if len(parts) >= 2 else "",
+                name=parts[2] if len(parts) >= 3 else "",
+                session_id=parts[3] if len(parts) >= 4 else "",
+                manager_flag=parts[4] if len(parts) >= 5 else "",
+            )
+        )
+    return rows
+
+
+def _list_tmux_window_rows() -> list[TmuxWindowRow]:
+    listed = subprocess.run(
+        ["tmux", "list-windows", "-F", "#{window_id}\t#{window_index}\t#{window_name}\t#{@cdx_session_id}\t#{@cdx_manager}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if listed.returncode != 0:
+        return []
+    return _parse_tmux_window_rows(listed.stdout)
+
+
+def _find_tmux_windows_by_session(session_id: str) -> list[TmuxWindowRow]:
+    return [row for row in _list_tmux_window_rows() if row.session_id == session_id and row.manager_flag != "1"]
 
 
 def get_tmux_tab_info() -> TmuxTabInfo | None:
@@ -171,6 +217,18 @@ def run_codex_resume_background(session_id: str, cwd: str | None, tab_label: str
 
     # Preferred path: tmux window when currently inside tmux.
     if os.environ.get("TMUX") and shutil.which("tmux"):
+        matched = _find_tmux_windows_by_session(session_id)
+        if matched:
+            target = matched[0].window_id or f":{matched[0].index}"
+            switched = subprocess.run(
+                ["tmux", "select-window", "-t", target],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if switched.returncode == 0:
+                return (True, f"Switched to existing tab {matched[0].name or matched[0].index}")
+
         cmd = f"codex resume {shlex.quote(session_id)}"
         win_name = _window_name_for_session(session_id, tab_label, run_cwd)
         completed = subprocess.run(
@@ -191,6 +249,12 @@ def run_codex_resume_background(session_id: str, cwd: str | None, tab_label: str
                 )
                 subprocess.run(
                     ["tmux", "set-option", "-w", "-t", window_id, "@cdx_manager", "0"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                subprocess.run(
+                    ["tmux", "set-option", "-w", "-t", window_id, "@cdx_session_id", session_id],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -239,6 +303,32 @@ def switch_tmux_window(next_window: bool) -> tuple[bool, str]:
     if completed.returncode != 0:
         return (False, "Failed to switch tmux window.")
     return (True, "Switched tmux window.")
+
+
+def close_tmux_tabs_for_session(session_id: str) -> tuple[bool, str]:
+    if not os.environ.get("TMUX"):
+        return (False, "Not in tmux session.")
+    if not shutil.which("tmux"):
+        return (False, "tmux command not found.")
+
+    matched = _find_tmux_windows_by_session(session_id)
+    if not matched:
+        return (True, "No open tab for this session.")
+
+    closed = 0
+    for row in matched:
+        target = row.window_id or f":{row.index}"
+        completed = subprocess.run(
+            ["tmux", "kill-window", "-t", target],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if completed.returncode == 0:
+            closed += 1
+    if closed == 0:
+        return (False, "Failed to close tab for this session.")
+    return (True, f"Closed {closed} tab(s) for this session.")
 
 
 def ensure_tmux_tab_keybindings() -> tuple[bool, str]:
@@ -298,6 +388,7 @@ def ensure_tmux_manager_window_name() -> tuple[bool, str]:
         ["tmux", "rename-window", "HOME"],
         ["tmux", "set-option", "-w", "@cdx_manager", "1"],
         ["tmux", "set-option", "-w", "@cdx_managed", "0"],
+        ["tmux", "set-option", "-w", "@cdx_session_id", ""],
     ]
     for cmd in cmds:
         completed = subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

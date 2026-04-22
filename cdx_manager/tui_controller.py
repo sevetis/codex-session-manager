@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .codex_ops import run_codex_resume_background, switch_tmux_window
+from .codex_ops import close_tmux_tabs_for_session, run_codex_resume_background, switch_tmux_window
 from .models import SessionInfo
 from .session_store import execute_delete
 from .textutil import clip_text, display_title, short_session_id
@@ -122,12 +122,20 @@ def _handle_delete(stdscr: curses.window, repo: SessionRepo, entries: list[Sessi
 
     ok = confirm_delete(
         stdscr,
-        f"Delete session {short_session_id(current.session_id)}: {clip_text(display_title(current), 50)}?",
+        "\n".join(
+            [
+                "Delete this session?",
+                f"title: {clip_text(display_title(current), 56)}",
+                f"id: {short_session_id(current.session_id)}",
+                f"cwd: {clip_text(current.cwd or '-', 56)}",
+            ]
+        ),
     )
     if not ok:
         state.status = "Delete canceled."
         return DispatchResult()
 
+    close_ok, close_msg = close_tmux_tabs_for_session(current.session_id)
     removed_files, removed_index, _ = execute_delete(
         codex_home=repo.codex_home,
         sessions=repo.sessions,
@@ -135,7 +143,13 @@ def _handle_delete(stdscr: curses.window, repo: SessionRepo, entries: list[Sessi
         dry_run=False,
     )
     state.selected_session_id = ""
-    state.status = f"Deleted {short_session_id(current.session_id)} (files={removed_files}, index={removed_index})."
+    close_note = ""
+    if close_ok and "Closed " in close_msg:
+        close_note = f", {close_msg.lower()}"
+    state.status = (
+        f"Deleted {short_session_id(current.session_id)} "
+        f"(files={removed_files}, index={removed_index}{close_note})."
+    )
     return DispatchResult(needs_refresh=True)
 
 

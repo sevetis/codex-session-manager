@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from cdx_manager.codex_ops import _parse_tmux_windows, _window_name_for_session
+from cdx_manager.codex_ops import _parse_tmux_window_rows, _parse_tmux_windows, _window_name_for_session
 
 
 class CodexOpsTests(unittest.TestCase):
@@ -26,6 +26,18 @@ class CodexOpsTests(unittest.TestCase):
             "/home/seven/Lab/codex-sess",
         )
         self.assertEqual(name, "refactor-auth-flow")
+
+    def test_parse_tmux_window_rows(self) -> None:
+        raw = (
+            "@1\t0\tHOME\t\t1\n"
+            "@2\t1\trefactor-auth\t019da6c7-3f44-7c51-bfae-9d1bcc0867ee\t0\n"
+            "@3\t2\tclean-up\t019da6ad-a9ea-7193-ba0c-416dacd0221e\t0\n"
+        )
+        rows = _parse_tmux_window_rows(raw)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0].name, "HOME")
+        self.assertEqual(rows[1].session_id, "019da6c7-3f44-7c51-bfae-9d1bcc0867ee")
+        self.assertEqual(rows[2].window_id, "@3")
 
 
 if __name__ == "__main__":
