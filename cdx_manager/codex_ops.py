@@ -280,7 +280,7 @@ def ensure_tmux_statusline() -> tuple[bool, str]:
         ],
         ["tmux", "set-window-option", "-g", "window-status-separator", ""],
         ["tmux", "set-window-option", "-g", "window-status-format", " #[fg=colour252,bg=colour236] #W #[default] "],
-        ["tmux", "set-window-option", "-g", "window-status-current-format", "#[bold,fg=colour235,bg=colour180] #W #[default]"],
+        ["tmux", "set-window-option", "-g", "window-status-current-format", " #[bold,fg=colour235,bg=colour180] #W #[default] "],
     ]
     for cmd in cmds:
         completed = subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

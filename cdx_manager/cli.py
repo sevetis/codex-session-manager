@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-y", "--yes", action="store_true", help="skip confirmation")
     p.add_argument("--codex-home", type=Path, default=default_codex_home(), help="Codex home dir (default: $CODEX_HOME or ~/.codex)")
     p.add_argument("--no-tui", action="store_true", help="disable default interactive TUI mode")
+    p.add_argument("--ui", choices=("curses", "ptk"), default="ptk", help="interactive UI backend (default: ptk)")
     p.add_argument("--no-auto-tmux", action="store_true", help=argparse.SUPPRESS)
     return p.parse_args()
 
@@ -73,6 +74,10 @@ def main() -> int:
             sys.executable,
             str(launcher),
             "--no-auto-tmux",
+            "--ui",
+            args.ui,
+            "--codex-home",
+            str(codex_home),
         ]
         os.execvp(cmd[0], cmd)
 
@@ -95,8 +100,16 @@ def main() -> int:
                 ensure_tmux_tab_keybindings()
                 ensure_tmux_statusline()
                 ensure_tmux_manager_window_name()
+            run_interactive = run_tui
+            if args.ui == "ptk":
+                try:
+                    from .tui_ptk import run_tui_ptk
+
+                    run_interactive = run_tui_ptk
+                except Exception:
+                    print("prompt_toolkit backend unavailable, falling back to curses.")
             while True:
-                action, payload = run_tui(codex_home)
+                action, payload = run_interactive(codex_home)
                 if action == "new" and payload is not None:
                     run_codex_new(payload.get("cwd", ""), payload.get("prompt", ""))
                     continue
